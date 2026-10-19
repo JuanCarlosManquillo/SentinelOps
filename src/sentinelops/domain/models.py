@@ -88,17 +88,20 @@ class Event:
     trace_id: str | None = None
 
     @property
-    def http_status(self) -> int | None:    # Caso de uso: "¿que codigo HTTP devolvio esta peticion?"
+    def http_status(self) -> int | None:
+        # Caso de uso: "¿que codigo HTTP devolvio esta peticion?"
         value = self.attributes.get("http.status_code")
         return int(value) if isinstance(value, int | float) else None
 
     @property
-    def latency_ms(self) -> float | None:  # Caso de uso: "¿cuánto tardó esta peticion?"
+    def latency_ms(self) -> float | None:
+        # Caso de uso: "¿cuánto tardó esta peticion?"
         value = self.attributes.get("latency_ms")
         return float(value) if isinstance(value, int | float) else None
 
     @property
-    def is_error(self) -> bool:  # Caso de uso: "¿debería alertar este evento?"
+    def is_error(self) -> bool:
+        # Caso de uso: "¿debería alertar este evento?"
         status = self.http_status
         return self.severity >= Severity.ERROR or (status is not None and status >= 500)
 
@@ -111,7 +114,7 @@ class Deployment:
 
 
 @dataclass(frozen=True, slots=True)
-class Anomaly: 
+class Anomaly:
     service: str
     detector: str
     signal: str

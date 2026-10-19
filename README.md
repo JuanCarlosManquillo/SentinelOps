@@ -6,8 +6,8 @@ a eventos concretos. Mide si sus diagnósticos aciertan contra un dataset con in
 conocidos.
 
 > **Estado: versión base (semana 0).** Ingesta segura, detector por umbral, correlación y
-> diagnóstico mínimos con pruebas. Las cifras de evaluación se publicarán en la semana 4;
-> hasta entonces este README no afirma ninguna precisión.
+> diagnóstico mínimos con pruebas.
+> hasta entonces este README no afirma ninguna precision.
 
 ## Arranque rápido
 
