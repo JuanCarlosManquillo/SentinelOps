@@ -1,0 +1,62 @@
+"""Fábrica de la aplicación FastAPI (punto de composición de la API)."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from sentinelops import __version__
+from sentinelops.api.errors import register_error_handlers
+from sentinelops.api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
+from sentinelops.api.routes import events, health
+from sentinelops.config import Settings, get_settings
+from sentinelops.persistence.database import build_engine, build_sessionmaker, create_schema
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        engine = build_engine(settings.database_url.get_secret_value())
+        if settings.auto_create_schema:
+            await create_schema(engine)
+        app.state.engine = engine
+        app.state.sessionmaker = build_sessionmaker(engine)
+        yield
+        await engine.dispose()
+
+    is_prod = settings.environment == "prod"
+    app = FastAPI(
+        title="SentinelOps",
+        version=__version__,
+        description="Diagnóstico de incidentes con evidencias.",
+        lifespan=lifespan,
+        # En producción la documentación interactiva se desactiva.
+        docs_url=None if is_prod else "/docs",
+        redoc_url=None,
+        openapi_url=None if is_prod else "/openapi.json",
+    )
+    app.state.settings = settings
+
+    # El último middleware añadido es el más externo: el límite de cuerpo actúa primero.
+    app.add_middleware(SecurityHeadersMiddleware)
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["GET", "POST", "PATCH"],
+            allow_headers=["X-API-Key", "Content-Type"],
+        )
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
+
+    register_error_handlers(app)
+    app.include_router(health.router)
+    app.include_router(events.router)
+    return app
+
+
+app = create_app()
