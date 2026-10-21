@@ -26,7 +26,10 @@ def build_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 async def create_schema(engine: AsyncEngine) -> None:
-    """Solo dev/test. En producción el esquema lo gestiona Alembic: Herramietna que gestiona migraciones """
+    """Crea el esquema en dev/test. En producción lo gestiona Alembic.
+
+    Alembic es la herramienta que gestiona las migraciones del esquema.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
