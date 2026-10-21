@@ -15,8 +15,8 @@ services:
       timeout: 3s
       retries: 10
     # Sin puerto publicado: solo accesible desde la red interna de Compose.
-    # Descomenta para conectarte desde tu máquina en desarrollo:
-    # ports: ["127.0.0.1:5432:5432"]
+    # Para usar el puerto desde el host, hay q descomenta la linea de abajo 
+    ports: ["127.0.0.1:15432:5432"]
 
   api:
     build: .
