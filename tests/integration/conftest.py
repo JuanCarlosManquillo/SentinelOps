@@ -6,8 +6,9 @@ Semana 1: añadir una variante con PostgreSQL real vía testcontainers (marca `p
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import pytest
@@ -54,3 +55,21 @@ async def keys(client: httpx.AsyncClient) -> Keys:
         await repo.create("writer", hash_api_key(writer), ["events:write"])
         await repo.create("reader", hash_api_key(reader), ["incidents:read"])
     return Keys(writer=writer, reader=reader)
+
+
+@pytest.fixture(scope="session")
+def postgres_container() -> Iterator[Any]:
+    """Levanta PostgreSQL 16 real para las pruebas marcadas `postgres`.
+
+    Se salta de forma limpia si Docker o testcontainers no están disponibles.
+    """
+    postgres = pytest.importorskip("testcontainers.postgres")
+    try:
+        container = postgres.PostgresContainer("postgres:16-alpine", driver="asyncpg")
+        container.start()
+    except Exception as exc:
+        pytest.skip(f"Docker/testcontainers no disponible: {exc}")
+    try:
+        yield container
+    finally:
+        container.stop()

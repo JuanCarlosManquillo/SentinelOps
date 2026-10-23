@@ -33,6 +33,7 @@ dev = [
     "pip-audit>=2.7",
     "import-linter>=2.0",
     "pre-commit>=3.8",
+    "testcontainers[postgres]>=4.0",
 ]
 otel = [
     "opentelemetry-sdk>=1.26",
@@ -76,12 +77,16 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra"
+# Regsitro de la marca para evitar algun warn
+markers=[
+    "postgres: requiere un PostgreSQL real via testcontainers(Docker)"
+]
 
 [tool.coverage.run]
 source = ["sentinelops"]
 branch = true
 
-# ---------- Arquitectura: el dominio no depende de la infraestructura ----------
+#Arquitectura: el dominio no depende de la infraestructura ----------
 [tool.importlinter]
 root_package = "sentinelops"
 include_external_packages = true
