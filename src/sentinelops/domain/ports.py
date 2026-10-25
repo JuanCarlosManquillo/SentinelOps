@@ -5,6 +5,7 @@ Protocolos pequeños y separados (principio de segregación de interfaces).
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -22,6 +23,12 @@ from sentinelops.domain.models import (
 class EventWriter(Protocol):
     async def add_many(self, events: Sequence[Event]) -> int:
         """Inserta eventos de forma idempotente y devuelve cuántos eran nuevos."""
+        ...
+
+
+class DeploymentWriter(Protocol):
+    async def add(self, deployment: Deployment) -> uuid.UUID:
+        """Registra un despliegue y devuelve su identificador."""
         ...
 
 

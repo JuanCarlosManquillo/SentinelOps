@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sentinelops import __version__
 from sentinelops.api.errors import register_error_handlers
 from sentinelops.api.middleware import BodySizeLimitMiddleware, SecurityHeadersMiddleware
-from sentinelops.api.routes import events, health
+from sentinelops.api.routes import deployments, events, health
 from sentinelops.config import Settings, get_settings
 from sentinelops.persistence.database import build_engine, build_sessionmaker, create_schema
 
@@ -56,6 +56,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_error_handlers(app)
     app.include_router(health.router)
     app.include_router(events.router)
+    # Se añade el router de despliegues con el fin de registrar un despliegue a traves de la API
+    app.include_router(deployments.router)
     return app
 
 

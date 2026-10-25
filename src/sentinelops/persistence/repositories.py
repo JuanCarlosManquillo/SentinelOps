@@ -10,8 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinelops.domain.models import Event, EventKind, Severity, TimeWindow
-from sentinelops.persistence.models import ApiKeyRow, EventRow
+from sentinelops.domain.models import Deployment, Event, EventKind, Severity, TimeWindow
+from sentinelops.persistence.models import ApiKeyRow, DeploymentRow, EventRow
 
 
 class SqlEventRepository:
@@ -116,3 +116,31 @@ class InMemoryEventRepository:
     async def list_window(self, window: TimeWindow) -> list[Event]:
         found = [e for e in self.events.values() if window.contains(e.occurred_at)]
         return sorted(found, key=lambda e: (e.occurred_at, e.event_id))
+
+
+class SqlDeploymentRepository:
+    """Implementa `DeploymentWriter` y `DeploymentReader`."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, deployment: Deployment) -> uuid.UUID:
+        row = DeploymentRow(
+            service=deployment.service,
+            version=deployment.version,
+            deployed_at=deployment.deployed_at,
+        )
+        self._session.add(row)
+        await self._session.commit()
+        return row.id
+
+
+class InMemoryDeploymentRepository:
+    """Doble de prueba de DeploymentWriter, sin base de datos."""
+
+    def __init__(self) -> None:
+        self.deployments: list[Deployment] = []
+
+    async def add(self, deployment: Deployment) -> uuid.UUID:
+        self.deployments.append(deployment)
+        return uuid.uuid4()

@@ -24,6 +24,7 @@ from sentinelops.persistence.repositories import SqlApiKeyRepository
 class Keys:
     writer: str
     reader: str
+    deployment: str
 
 
 @pytest.fixture
@@ -49,12 +50,13 @@ async def client(settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
 @pytest.fixture
 async def keys(client: httpx.AsyncClient) -> Keys:
     app = client.app  # type: ignore[attr-defined]
-    writer, reader = generate_api_key(), generate_api_key()
+    writer, reader, deployment = generate_api_key(), generate_api_key(), generate_api_key()
     async with app.state.sessionmaker() as session:
         repo = SqlApiKeyRepository(session)
         await repo.create("writer", hash_api_key(writer), ["events:write"])
         await repo.create("reader", hash_api_key(reader), ["incidents:read"])
-    return Keys(writer=writer, reader=reader)
+        await repo.create("deployment", hash_api_key(deployment), ["deployments:write"])
+    return Keys(writer=writer, reader=reader, deployment=deployment)
 
 
 @pytest.fixture(scope="session")

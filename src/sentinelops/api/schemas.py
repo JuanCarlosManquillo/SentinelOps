@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
-from sentinelops.domain.models import Event, EventKind, Severity
+from sentinelops.domain.models import Deployment, Event, EventKind, Severity
 
 ServiceName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 AttributeValue = str | int | float | bool | None
@@ -55,6 +57,30 @@ class IngestOut(BaseModel):
     received: int
     inserted: int
     duplicates: int
+
+
+class DeploymentIn(BaseModel):
+    """Para registrar un desploegue y asegurar reglas de diagnóstico (RF-05)."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    service: ServiceName
+    version: str = Field(min_length=1, max_length=64)
+    deployed_at: AwareDatetime
+
+    def to_domain(self) -> Deployment:
+        return Deployment(
+            service=self.service,
+            version=self.version,
+            deployed_at=self.deployed_at,
+        )
+
+
+class DeploymentOut(BaseModel):
+    id: uuid.UUID
+    service: str
+    version: str
+    deployed_at: datetime
 
 
 class HealthOut(BaseModel):
