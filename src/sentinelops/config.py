@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     latency_p95_threshold_ms: float = 1000.0
     min_events_per_window: int = 10
 
+    # Detectores estadisticos (ADR 0006)
+    robust_z_threshold: float = Field(default=3.5, gt=0)
+    ewma_alpha: float = Field(default=0.3, gt=0, le=1)
+    ewma_factor: float = Field(default=2.0, gt=1)
+
     # Correlación y diagnóstico
     correlation_gap_seconds: int = 600
     deployment_lookback_seconds: int = 1800

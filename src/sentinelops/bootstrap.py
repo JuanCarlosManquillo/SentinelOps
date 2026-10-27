@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from sentinelops.application.analyze import Pipeline
 from sentinelops.config import Settings
+from sentinelops.detection.statistical import EwmaDetector, RobustZScoreDetector
 from sentinelops.detection.threshold import ThresholdDetector
 from sentinelops.diagnosis.rules import ErrorSpikeRule, RecentDeploymentRule
 
@@ -18,7 +19,15 @@ def build_pipeline(settings: Settings) -> Pipeline:
                 latency_p95_threshold_ms=settings.latency_p95_threshold_ms,
                 min_events=settings.min_events_per_window,
             ),
-            # Semana 2: RobustZScoreDetector(), EwmaDetector()
+            RobustZScoreDetector(
+                z_threshold=settings.robust_z_threshold,
+                min_events=settings.min_events_per_window,
+            ),
+            EwmaDetector(
+                alpha=settings.ewma_alpha,
+                factor=settings.ewma_factor,
+                min_events=settings.min_events_per_window,
+            ),
         ],
         rules=[
             RecentDeploymentRule(lookback=timedelta(seconds=settings.deployment_lookback_seconds)),
