@@ -18,7 +18,19 @@ AttributeValue = str | int | float | bool | None
 
 
 class EventIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "service": "checkout",
+                    "version": "v2.4.1",
+                    "deployed_at": "2026-10-25T10:00:00Z",
+                }
+            ]
+        },
+    )
 
     schema_version: Literal["1.0"] = "1.0"
     event_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:\-]+$")
@@ -47,7 +59,26 @@ class EventIn(BaseModel):
 
 
 class EventBatchIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "events": [
+                        {
+                            "event_id": "checkout-00001",
+                            "service": "checkout",
+                            "kind": "http_error",
+                            "severity": "error",
+                            "occurred_at": "2026-10-25T10:00:01Z",
+                            "message": "upstream unavailable",
+                            "attributes": {"http.status_code": 503, "latency_ms": 1840},
+                        }
+                    ]
+                }
+            ]
+        },
+    )
 
     # El máximo efectivo lo fija la configuración; 500 es el valor por defecto (RNF-02).
     events: list[EventIn] = Field(min_length=1, max_length=500)

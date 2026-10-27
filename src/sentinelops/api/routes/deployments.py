@@ -24,7 +24,18 @@ router = APIRouter(prefix="/api/v1/deployments", tags=["deployments"])
     "",
     status_code=status.HTTP_201_CREATED,
     response_model=DeploymentOut,
-    responses={401: {}, 403: {}, 422: {}},
+    summary="Registra un despliegue",
+    description=(
+        "Registra un despliegue (servicio, version y fecha). Sirve para que la regla de "
+        "diagnostico pueda sospechar de un despliegue reciente. Requiere el scope "
+        "deployments:write."
+    ),
+    responses={
+        201: {"description": "Despliegue registrado. Devuelve el id y los datos."},
+        401: {"description": "Falta la API key o es invalida."},
+        403: {"description": "La API key no tiene el scope deployments:write."},
+        422: {"description": "Esquema invalido o fecha en el futuro."},
+    },
 )
 async def post_deployment(
     body: DeploymentIn,

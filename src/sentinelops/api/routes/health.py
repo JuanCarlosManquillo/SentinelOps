@@ -16,7 +16,13 @@ from sentinelops.api.schemas import HealthOut
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health", response_model=HealthOut)
+@router.get(
+    "/health",
+    response_model=HealthOut,
+    summary="Estado del servicio",
+    description="Comprueba que la API responde y que la base de datos esta disponible."
+    "Devuelve 503 si la base de datos no responde. No requiere autenticación.",
+)
 async def health(
     response: Response, session: Annotated[AsyncSession, Depends(get_session)]
 ) -> HealthOut:
