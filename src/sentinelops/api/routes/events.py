@@ -25,7 +25,18 @@ router = APIRouter(prefix="/api/v1/events", tags=["events"])
     "",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=IngestOut,
-    responses={401: {}, 403: {}, 413: {}, 422: {}},
+    description=(
+        "Recibe hasta 500 eventos y los guarda sin duplicar (reenviar el mismo event_id "
+        "no crea filas). Responde 202 porque el analisis corre despues, en el worker. "
+        "Requiere el scope events:write."
+    ),
+    responses={
+        202: {"description": "Lote aceptado. Devuelve received, inserted y duplicates."},
+        401: {"description": "Falta la API key o es invalida."},
+        403: {"description": "La API key no tiene el scope events:write."},
+        413: {"description": "El cuerpo supera el limite permitido."},
+        422: {"description": "Esquema invalido o fecha fuera de rango."},
+    },
 )
 async def post_events(
     batch: EventBatchIn,

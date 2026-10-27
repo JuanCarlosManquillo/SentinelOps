@@ -15,6 +15,26 @@ from sentinelops.api.routes import deployments, events, health
 from sentinelops.config import Settings, get_settings
 from sentinelops.persistence.database import build_engine, build_sessionmaker, create_schema
 
+API_DESCRIPTION = (
+    "SentinelOps recibe eventos (logs, metricas, errores HTTP), detecta anomalias, "
+    "las agrupa en incidentes y propone causas probables con evidencias.\n\n"
+    "**Autenticacion:** las rutas de datos piden la cabecera `X-API-Key`. "
+    "Usa el boton **Authorize** (arriba a la derecha) para probar desde aqui."
+)
+
+# Descripcion de cada grupo de endpoints que se ve en Swagger.
+TAGS_METADATA = [
+    {"name": "health", "description": "Estado del servicio y de la base de datos."},
+    {
+        "name": "events",
+        "description": "Ingesta de eventos por lotes. Requiere el scope events:write.",
+    },
+    {
+        "name": "deployments",
+        "description": "Registro de despliegues. Requiere el scope deployments:write.",
+    },
+]
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
@@ -33,7 +53,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="SentinelOps",
         version=__version__,
-        description="Diagnóstico de incidentes con evidencias.",
+        description=API_DESCRIPTION,
+        openapi_tags=TAGS_METADATA,
         lifespan=lifespan,
         # En producción la documentación interactiva se desactiva.
         docs_url=None if is_prod else "/docs",
