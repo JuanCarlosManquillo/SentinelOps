@@ -6,12 +6,18 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinelops.domain.models import Deployment, Event, EventKind, Severity, TimeWindow
-from sentinelops.persistence.models import ApiKeyRow, DeploymentRow, EventRow
+from sentinelops.domain.models import Anomaly, Deployment, Event, EventKind, Severity, TimeWindow
+from sentinelops.persistence.models import (
+    AnomalyRow,
+    ApiKeyRow,
+    CheckpointRow,
+    DeploymentRow,
+    EventRow,
+)
 
 
 class SqlEventRepository:
@@ -62,6 +68,18 @@ class SqlEventRepository:
         rows = (await self._session.scalars(stmt)).all()
         return [_to_domain(r) for r in rows]
 
+    # Devuelve la fecha mas antigua de un evento
+    async def earliest_occurred_at(self) -> datetime | None:
+        stmt = select(func.min(EventRow.occurred_at))
+        result: datetime | None = await self._session.scalar(stmt)
+        return _as_utc(result)
+
+    # Devuelve la fecha mas reciente de un evento
+    async def latest_occurred_at(self) -> datetime | None:
+        stmt = select(func.max(EventRow.occurred_at))
+        result: datetime | None = await self._session.scalar(stmt)
+        return _as_utc(result)
+
 
 def _to_domain(row: EventRow) -> Event:
     return Event(
@@ -77,6 +95,13 @@ def _to_domain(row: EventRow) -> Event:
         attributes=row.attributes,
         trace_id=row.trace_id,
     )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    # SQLite devuelve fechas sin zona; las normalizamos a UTC como en _to_domain
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 class SqlApiKeyRepository:
@@ -144,3 +169,61 @@ class InMemoryDeploymentRepository:
     async def add(self, deployment: Deployment) -> uuid.UUID:
         self.deployments.append(deployment)
         return uuid.uuid4()
+
+
+class SqlCheckpointRepository:
+    """Guarda y lee la ultima ventana procesada por el worker (RF-17)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, name: str) -> datetime | None:
+        row = await self._session.get(CheckpointRow, name)
+        return _as_utc(row.window_end) if row else None
+
+    async def set(self, name: str, window_end: datetime) -> None:
+        # Sin commit: el worker confirma el checkpoint junto con las anomalias.
+        row = await self._session.get(CheckpointRow, name)
+        if row is None:
+            self._session.add(CheckpointRow(name=name, window_end=window_end))
+        else:
+            row.window_end = window_end
+
+
+class SqlAnomalyRepository:
+    """Inserta anomalias de forma idempotente por su clave (RNF-08)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_many(self, anomalies: Sequence[Anomaly]) -> int:
+        if not anomalies:
+            return 0
+        rows = [
+            {
+                "id": uuid.uuid4(),
+                "service": a.service,
+                "detector": a.detector,
+                "signal": a.signal,
+                "window_start": a.window.start,
+                "window_end": a.window.end,
+                "score": a.score,
+                "observed": a.observed,
+                "expected": a.expected,
+                "evidence_event_ids": list(a.evidence_ids),
+            }
+            for a in anomalies
+        ]
+        dialect = self._session.get_bind().dialect.name
+        insert = postgresql.insert if dialect == "postgresql" else sqlite.insert
+        # Reprocesar una ventana tras un reinicio no duplica: ON CONFLICT por la clave.
+        stmt = (
+            insert(AnomalyRow)
+            .values(rows)
+            .on_conflict_do_nothing(
+                index_elements=["service", "detector", "signal", "window_start"]
+            )
+            .returning(AnomalyRow.id)
+        )
+        result = await self._session.execute(stmt)
+        return len(result.all())

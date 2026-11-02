@@ -114,3 +114,15 @@ class ApiKeyRow(Base):
     scopes: Mapped[list[str]] = mapped_column(JsonType, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CheckpointRow(Base):
+    __tablename__ = "checkpoints"
+
+    # Un checkpoint por "nombre" de worker (de momento usamos uno solo, "default").
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Fin de la ultima ventana procesada: el worker retoma desde aqui al reiniciar.
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
