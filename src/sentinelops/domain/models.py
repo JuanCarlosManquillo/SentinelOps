@@ -157,6 +157,12 @@ _ALLOWED_TRANSITIONS: dict[IncidentStatus, frozenset[IncidentStatus]] = {
 }
 
 
+def validate_transition(current: IncidentStatus, target: IncidentStatus) -> None:
+    """Lanza InvalidTransition si el cambio de estado no esta permitido (RF-12)."""
+    if target not in _ALLOWED_TRANSITIONS[current]:
+        raise InvalidTransition(current.value, target.value)
+
+
 @dataclass(frozen=True, slots=True)
 class Incident:
     """Raíz del agregado: agrupa anomalías e hipótesis."""

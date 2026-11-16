@@ -13,17 +13,18 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinelops.application.analyze import analyze_window
+from sentinelops.application.analyze import Pipeline, analyze_window
 from sentinelops.bootstrap import build_pipeline
 from sentinelops.config import get_settings
 from sentinelops.domain.models import Incident, TimeWindow
-from sentinelops.domain.ports import Detector
 from sentinelops.ingestion.synthetic import ScenarioConfig, generate
 from sentinelops.persistence.database import build_engine, build_sessionmaker
 from sentinelops.persistence.repositories import (
     SqlAnomalyRepository,
     SqlCheckpointRepository,
+    SqlDeploymentRepository,
     SqlEventRepository,
+    SqlIncidentRepository,
 )
 
 logger = logging.getLogger("sentinelops.worker")
@@ -65,17 +66,20 @@ def _print(incidents: Sequence[Incident]) -> None:
 
 async def analyze_pending(
     session: AsyncSession,
-    detectors: Sequence[Detector],
+    pipeline: Pipeline,
     window_seconds: int,
     checkpoint_name: str = "default",
 ) -> int:
-    """Procesa las ventanas completas pendientes: detecta y guarda anomalias + checkpoint.
+    """Procesa las ventanas completas pendientes: detecta, correlaciona en incidentes
+    y guarda anomalias, incidentes, hipotesis y checkpoint (RF-08, RF-10, RNF-08).
 
-    Idempotente: reprocesar una ventana tras un reinicio no duplica anomalias (RNF-08).
-    Devuelve cuantas ventanas proceso.
+    Idempotente: carga los incidentes abiertos para extenderlos en vez de duplicarlos
+    al reprocesar una ventana tras un reinicio. Devuelve cuantas ventanas proceso.
     """
     events = SqlEventRepository(session)
     anomalies_repo = SqlAnomalyRepository(session)
+    incidents_repo = SqlIncidentRepository(session)
+    deployments_repo = SqlDeploymentRepository(session)
     checkpoint = SqlCheckpointRepository(session)
 
     # Retoma desde el checkpoint; si no hay, desde el evento mas antiguo.
@@ -86,14 +90,22 @@ async def analyze_pending(
     if start is None or latest is None:
         return 0  # no hay eventos todavia
 
+    deployments = await deployments_repo.list_all()
+    open_incidents = await incidents_repo.load_open()
+
     processed = 0
     window = TimeWindow.starting_at(start, window_seconds)
     while window.end <= latest:  # solo ventanas ya completas
         window_events = await events.list_window(window)
-        found = [a for d in detectors for a in d.detect(window_events, window)]
-        await anomalies_repo.add_many(found)
+        result = analyze_window(pipeline, window, window_events, deployments, open_incidents)
+        # Solo persistimos cuando hubo anomalias: una ventana vacia no debe reescribir
+        # ni borrar las hipotesis ya calculadas de los incidentes abiertos.
+        if result.anomalies:
+            await anomalies_repo.add_many(result.anomalies)
+            await incidents_repo.save(result.incidents)
         await checkpoint.set(checkpoint_name, window.end)
-        await session.commit()  # anomalias y checkpoint en la misma transaccion
+        await session.commit()  # anomalias, incidentes y checkpoint en la misma transaccion
+        open_incidents = result.incidents  # arrastra el estado a la siguiente ventana
         processed += 1
         window = window.next()
     return processed
@@ -102,14 +114,14 @@ async def analyze_pending(
 async def _run_continuous() -> None:
     """Bucle infinito: analiza las ventanas completas pendientes cada `window_seconds`"""
     settings = get_settings()
-    detectors = build_pipeline(settings).detectors
+    pipeline = build_pipeline(settings)
     engine = build_engine(settings.database_url.get_secret_value())
     sessionmaker = build_sessionmaker(engine)
     logger.info("worker iniciado; ventanas de %d s", settings.window_seconds)
     try:
         while True:
             async with sessionmaker() as session:
-                processed = await analyze_pending(session, detectors, settings.window_seconds)
+                processed = await analyze_pending(session, pipeline, settings.window_seconds)
             if processed:
                 logger.info("procesadas %d ventanas", processed)
             await asyncio.sleep(settings.window_seconds)

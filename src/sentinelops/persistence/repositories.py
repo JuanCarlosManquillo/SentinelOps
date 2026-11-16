@@ -6,17 +6,29 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinelops.domain.models import Anomaly, Deployment, Event, EventKind, Severity, TimeWindow
+from sentinelops.domain.models import (
+    Anomaly,
+    Deployment,
+    Event,
+    EventKind,
+    Incident,
+    IncidentStatus,
+    Severity,
+    TimeWindow,
+    validate_transition,
+)
 from sentinelops.persistence.models import (
     AnomalyRow,
     ApiKeyRow,
     CheckpointRow,
     DeploymentRow,
     EventRow,
+    HypothesisRow,
+    IncidentRow,
 )
 
 
@@ -104,6 +116,25 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def _utc(value: datetime) -> datetime:
+    # Igual que _as_utc pero para columnas NOT NULL: nunca recibe None.
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _anomaly_to_domain(row: AnomalyRow) -> Anomaly:
+    # Reconstruye la anomalia de dominio desde su fila para recorrelacionar en el worker.
+    return Anomaly(
+        service=row.service,
+        detector=row.detector,
+        signal=row.signal,
+        window=TimeWindow(_utc(row.window_start), _utc(row.window_end)),
+        score=row.score,
+        observed=row.observed,
+        expected=row.expected,
+        evidence_ids=tuple(row.evidence_event_ids),
+    )
+
+
 class SqlApiKeyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -158,6 +189,15 @@ class SqlDeploymentRepository:
         self._session.add(row)
         await self._session.commit()
         return row.id
+
+    async def list_all(self) -> list[Deployment]:
+        # El diagnostico necesita los despliegues para la regla de "despliegue reciente".
+        stmt = select(DeploymentRow).order_by(DeploymentRow.deployed_at)
+        rows = (await self._session.scalars(stmt)).all()
+        return [
+            Deployment(service=r.service, version=r.version, deployed_at=_utc(r.deployed_at))
+            for r in rows
+        ]
 
 
 class InMemoryDeploymentRepository:
@@ -227,3 +267,141 @@ class SqlAnomalyRepository:
         )
         result = await self._session.execute(stmt)
         return len(result.all())
+
+
+class SqlIncidentRepository:
+    """Lectura y gestion de incidentes para la API (RF-11, RF-12)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, incident_id: uuid.UUID) -> IncidentRow | None:
+        return await self._session.get(IncidentRow, incident_id)
+
+    async def hypotheses_for(self, incident_id: uuid.UUID) -> list[HypothesisRow]:
+        stmt = (
+            select(HypothesisRow)
+            .where(HypothesisRow.incident_id == incident_id)
+            .order_by(HypothesisRow.confidence.desc())
+        )
+        return list((await self._session.scalars(stmt)).all())
+
+    async def list(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        cursor: tuple[datetime, uuid.UUID] | None,
+    ) -> list[IncidentRow]:
+        # Orden estable: del mas reciente al mas antiguo (asi los nuevos no desplazan paginas).
+        stmt = select(IncidentRow).order_by(IncidentRow.created_at.desc(), IncidentRow.id.desc())
+        if status is not None:
+            stmt = stmt.where(IncidentRow.status == status)
+        if cursor is not None:
+            created, ident = cursor
+            # Keyset: trae lo que va "despues" del ultimo visto (comparacion por par).
+            stmt = stmt.where(
+                tuple_(IncidentRow.created_at, IncidentRow.id) < tuple_(created, ident)
+            )
+        # Pedimos uno de mas para saber si hay pagina siguiente.
+        rows = (await self._session.scalars(stmt.limit(limit + 1))).all()
+        return list(rows)
+
+    async def update_status(self, incident_id: uuid.UUID, target: str) -> IncidentRow | None:
+        row = await self._session.get(IncidentRow, incident_id)
+        if row is None:
+            return None
+        current = IncidentStatus(row.status)
+        new_status = IncidentStatus(target)
+        validate_transition(current, new_status)  # si no es valida -> InvalidTransition (409)
+        row.status = new_status.value
+        if new_status is IncidentStatus.RESOLVED:
+            row.ended_at = datetime.now(UTC)  # al resolver, marcamos el fin
+        elif current is IncidentStatus.RESOLVED:
+            row.ended_at = None  # reapertura: ya no tiene fin
+        await self._session.commit()
+        return row
+
+    async def load_open(self) -> Sequence[Incident]:
+        """Reconstruye como dominio los incidentes no resueltos para que el worker los
+        extienda en vez de crear duplicados al reprocesar una ventana (RF-08, RNF-08)."""
+        stmt = select(IncidentRow).where(IncidentRow.status != IncidentStatus.RESOLVED.value)
+        incidents: list[Incident] = []
+        for row in (await self._session.scalars(stmt)).all():
+            anomalies = await self._anomalies_of(row.id)
+            if not anomalies:
+                continue  # sin anomalias no podriamos calcular su inicio; lo omitimos
+            # Las hipotesis se recalculan al diagnosticar: no hace falta cargarlas.
+            incidents.append(
+                Incident(
+                    id=row.id,
+                    status=IncidentStatus(row.status),
+                    anomalies=tuple(anomalies),
+                )
+            )
+        return incidents
+
+    async def _anomalies_of(self, incident_id: uuid.UUID) -> Sequence[Anomaly]:
+        stmt = select(AnomalyRow).where(AnomalyRow.incident_id == incident_id)
+        return [_anomaly_to_domain(r) for r in (await self._session.scalars(stmt)).all()]
+
+    async def save(self, incidents: Sequence[Incident]) -> None:
+        """Persiste incidentes correlacionados: upsert de la cabecera, enlaza sus
+        anomalias por clave y reemplaza sus hipotesis. Sin commit: el worker confirma
+        todo junto con el checkpoint (RNF-08)."""
+        for incident in incidents:
+            await self._upsert_incident(incident)
+            await self._link_anomalies(incident)
+            await self._replace_hypotheses(incident)
+
+    async def _upsert_incident(self, incident: Incident) -> None:
+        services = sorted(incident.services)
+        title = ", ".join(services)  # titulo simple: los servicios afectados
+        row = await self._session.get(IncidentRow, incident.id)
+        if row is None:
+            self._session.add(
+                IncidentRow(
+                    id=incident.id,
+                    title=title,
+                    status=incident.status.value,
+                    services=services,
+                    started_at=incident.started_at,
+                )
+            )
+        else:
+            # No tocamos el status: pudo cambiarlo la API (open->investigating).
+            row.title = title
+            row.services = services
+            row.started_at = incident.started_at
+
+    async def _link_anomalies(self, incident: Incident) -> None:
+        # Marca a que incidente pertenece cada anomalia, localizandola por su clave unica.
+        for anomaly in incident.anomalies:
+            service, detector, signal, window_start = anomaly.key
+            await self._session.execute(
+                update(AnomalyRow)
+                .where(
+                    AnomalyRow.service == service,
+                    AnomalyRow.detector == detector,
+                    AnomalyRow.signal == signal,
+                    AnomalyRow.window_start == window_start,
+                )
+                .values(incident_id=incident.id)
+            )
+
+    async def _replace_hypotheses(self, incident: Incident) -> None:
+        # Borramos y reinsertamos: el diagnostico es determinista, asi no se acumulan.
+        await self._session.execute(
+            delete(HypothesisRow).where(HypothesisRow.incident_id == incident.id)
+        )
+        for hypothesis in incident.hypotheses:
+            self._session.add(
+                HypothesisRow(
+                    incident_id=incident.id,
+                    cause=hypothesis.cause,
+                    confidence=hypothesis.confidence.value,
+                    evidence=list(hypothesis.evidence),
+                    rule=hypothesis.rule,
+                    recommendation=hypothesis.recommendation,
+                )
+            )

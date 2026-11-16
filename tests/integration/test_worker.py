@@ -9,10 +9,12 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinelops.application.analyze import Pipeline
 from sentinelops.detection.threshold import ThresholdDetector
+from sentinelops.diagnosis.rules import ErrorSpikeRule
 from sentinelops.domain.models import Event, EventKind, Severity
 from sentinelops.persistence.database import build_engine, build_sessionmaker, create_schema
-from sentinelops.persistence.models import AnomalyRow, CheckpointRow
+from sentinelops.persistence.models import AnomalyRow, CheckpointRow, HypothesisRow, IncidentRow
 from sentinelops.persistence.repositories import SqlEventRepository
 from sentinelops.worker import analyze_pending
 
@@ -52,15 +54,16 @@ async def test_worker_processes_and_is_idempotent_on_restart(session: AsyncSessi
     # Un minuto completo con 100% de error -> el umbral debe marcar una anomalia.
     events = _error_events(15, minute=0) + _error_events(15, minute=1)
     await SqlEventRepository(session).add_many(events)
-    detectors = [ThresholdDetector()]
+    # Sin reglas: aqui solo nos interesa que detecte y no duplique al reiniciar.
+    pipeline = Pipeline(detectors=[ThresholdDetector()], rules=[])
 
-    processed = await analyze_pending(session, detectors, window_seconds=60)
+    processed = await analyze_pending(session, pipeline, window_seconds=60)
     assert processed >= 1
     first_count = await _count_anomalies(session)
     assert first_count >= 1
 
     # Reinicio normal: el checkpoint evita reprocesar -> 0 ventanas nuevas, mismas anomalias.
-    assert await analyze_pending(session, detectors, window_seconds=60) == 0
+    assert await analyze_pending(session, pipeline, window_seconds=60) == 0
     assert await _count_anomalies(session) == first_count
 
     # El checkpoint quedo guardado.
@@ -71,5 +74,39 @@ async def test_worker_processes_and_is_idempotent_on_restart(session: AsyncSessi
     # ON CONFLICT por la clave de anomalia evita duplicar (RNF-08).
     await session.delete(checkpoint)
     await session.commit()
-    await analyze_pending(session, detectors, window_seconds=60)
+    await analyze_pending(session, pipeline, window_seconds=60)
     assert await _count_anomalies(session) == first_count
+
+
+async def test_worker_persists_incident_with_hypothesis(session: AsyncSession) -> None:
+    # Una ventana completa con errores 503 -> anomalia por umbral -> incidente persistido.
+    events = _error_events(15, minute=0) + _error_events(15, minute=1)
+    await SqlEventRepository(session).add_many(events)
+    # Con la regla error_spike esperamos ademas una hipotesis (el 503 domina los errores).
+    pipeline = Pipeline(detectors=[ThresholdDetector()], rules=[ErrorSpikeRule()])
+
+    await analyze_pending(session, pipeline, window_seconds=60)
+
+    incidents = list((await session.scalars(select(IncidentRow))).all())
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert incident.status == "open"
+    assert incident.services == ["checkout"]
+
+    # La anomalia quedo enlazada a su incidente (incident_id no nulo).
+    linked = await session.scalar(
+        select(func.count()).select_from(AnomalyRow).where(AnomalyRow.incident_id == incident.id)
+    )
+    assert linked and linked >= 1
+
+    # La regla error_spike dejo una hipotesis con evidencias concretas (RF-10).
+    hypotheses = list(
+        (
+            await session.scalars(
+                select(HypothesisRow).where(HypothesisRow.incident_id == incident.id)
+            )
+        ).all()
+    )
+    assert len(hypotheses) == 1
+    assert hypotheses[0].rule == "error_spike"
+    assert hypotheses[0].evidence
