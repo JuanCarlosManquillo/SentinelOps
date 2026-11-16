@@ -6,17 +6,28 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinelops.domain.models import Anomaly, Deployment, Event, EventKind, Severity, TimeWindow
+from sentinelops.domain.models import (
+    Anomaly,
+    Deployment,
+    Event,
+    EventKind,
+    IncidentStatus,
+    Severity,
+    TimeWindow,
+    validate_transition,
+)
 from sentinelops.persistence.models import (
     AnomalyRow,
     ApiKeyRow,
     CheckpointRow,
     DeploymentRow,
     EventRow,
+    HypothesisRow,
+    IncidentRow,
 )
 
 
@@ -227,3 +238,57 @@ class SqlAnomalyRepository:
         )
         result = await self._session.execute(stmt)
         return len(result.all())
+
+
+class SqlIncidentRepository:
+    """Lectura y gestion de incidentes para la API (RF-11, RF-12)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, incident_id: uuid.UUID) -> IncidentRow | None:
+        return await self._session.get(IncidentRow, incident_id)
+
+    async def hypotheses_for(self, incident_id: uuid.UUID) -> list[HypothesisRow]:
+        stmt = (
+            select(HypothesisRow)
+            .where(HypothesisRow.incident_id == incident_id)
+            .order_by(HypothesisRow.confidence.desc())
+        )
+        return list((await self._session.scalars(stmt)).all())
+
+    async def list(
+        self,
+        *,
+        status: str | None,
+        limit: int,
+        cursor: tuple[datetime, uuid.UUID] | None,
+    ) -> list[IncidentRow]:
+        # Orden estable: del mas reciente al mas antiguo (asi los nuevos no desplazan paginas).
+        stmt = select(IncidentRow).order_by(IncidentRow.created_at.desc(), IncidentRow.id.desc())
+        if status is not None:
+            stmt = stmt.where(IncidentRow.status == status)
+        if cursor is not None:
+            created, ident = cursor
+            # Keyset: trae lo que va "despues" del ultimo visto (comparacion por par).
+            stmt = stmt.where(
+                tuple_(IncidentRow.created_at, IncidentRow.id) < tuple_(created, ident)
+            )
+        # Pedimos uno de mas para saber si hay pagina siguiente.
+        rows = (await self._session.scalars(stmt.limit(limit + 1))).all()
+        return list(rows)
+
+    async def update_status(self, incident_id: uuid.UUID, target: str) -> IncidentRow | None:
+        row = await self._session.get(IncidentRow, incident_id)
+        if row is None:
+            return None
+        current = IncidentStatus(row.status)
+        new_status = IncidentStatus(target)
+        validate_transition(current, new_status)  # si no es valida -> InvalidTransition (409)
+        row.status = new_status.value
+        if new_status is IncidentStatus.RESOLVED:
+            row.ended_at = datetime.now(UTC)  # al resolver, marcamos el fin
+        elif current is IncidentStatus.RESOLVED:
+            row.ended_at = None  # reapertura: ya no tiene fin
+        await self._session.commit()
+        return row

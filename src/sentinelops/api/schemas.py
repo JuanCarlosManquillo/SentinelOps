@@ -118,3 +118,39 @@ class HealthOut(BaseModel):
     status: Literal["ok", "degraded"]
     database: Literal["ok", "unavailable"]
     version: str
+
+
+class HypothesisOut(BaseModel):
+    cause: str
+    confidence: float
+    rule: str
+    recommendation: str
+    evidence: list[str]
+
+
+class IncidentOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    services: list[str]
+    started_at: datetime
+    ended_at: datetime | None
+    hypotheses: list[HypothesisOut]
+
+
+class IncidentSummaryOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    services: list[str]
+    started_at: datetime
+    ended_at: datetime | None
+
+
+class IncidentListOut(BaseModel):
+    items: list[IncidentSummaryOut]
+    next_cursor: str | None
+
+
+class IncidentPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["open", "investigating", "resolved"]
